@@ -1,0 +1,631 @@
+-- ================================================================
+-- khamis GLOBALE GROUPES — Schéma SQLite v1.0
+-- ================================================================
+
+PRAGMA foreign_keys = ON;
+
+-- ─────────────────────────────────────────────
+-- USERS (tous rôles confondus)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone         TEXT UNIQUE NOT NULL,
+  fullname      TEXT NOT NULL,
+  email         TEXT,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'user'
+                CHECK(role IN ('admin','gerant','agent','user')),
+  province      TEXT,
+  city          TEXT,
+  address       TEXT,
+  avatar        TEXT,
+  is_active     INTEGER DEFAULT 1,
+  kyc_level     INTEGER DEFAULT 0,
+  last_login    DATETIME,
+  created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active);
+
+-- ─────────────────────────────────────────────
+-- REFRESH TOKENS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL,
+  token      TEXT NOT NULL UNIQUE,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id);
+
+-- ─────────────────────────────────────────────
+-- CATÉGORIES
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS categories (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  description TEXT,
+  color       TEXT DEFAULT '#1e3a5f',
+  parent_id   INTEGER,
+  order_index INTEGER DEFAULT 0,
+  is_active   INTEGER DEFAULT 1,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (parent_id) REFERENCES categories(id) ON DELETE SET NULL
+);
+
+-- ─────────────────────────────────────────────
+-- DÉPARTEMENTS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS departements (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  name            TEXT NOT NULL UNIQUE,
+  description     TEXT,
+  responsable_id  INTEGER,
+  is_active       INTEGER DEFAULT 1,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (responsable_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- ─────────────────────────────────────────────
+-- BOUTIQUES
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS boutiques (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  name           TEXT NOT NULL,
+  category_id    INTEGER NOT NULL,
+  departement_id INTEGER,
+  address        TEXT,
+  phone          TEXT,
+  gerant_id      INTEGER,
+  is_active      INTEGER DEFAULT 1,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (category_id)    REFERENCES categories(id)  ON DELETE RESTRICT,
+  FOREIGN KEY (departement_id) REFERENCES departements(id) ON DELETE SET NULL,
+  FOREIGN KEY (gerant_id)      REFERENCES users(id)        ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_boutiques_category ON boutiques(category_id);
+CREATE INDEX IF NOT EXISTS idx_boutiques_gerant ON boutiques(gerant_id);
+
+-- ─────────────────────────────────────────────
+-- PRODUITS (double prix obligatoire)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS produits (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  reference       TEXT NOT NULL UNIQUE,
+  name            TEXT NOT NULL,
+  description     TEXT,
+  image           TEXT,
+  category_id     INTEGER NOT NULL,
+  boutique_id     INTEGER NOT NULL,
+  prix_partenaire INTEGER NOT NULL CHECK(prix_partenaire >= 0),
+  prix_vente      INTEGER NOT NULL CHECK(prix_vente >= 0),
+  marge_unitaire  INTEGER GENERATED ALWAYS AS (prix_vente - prix_partenaire) STORED,
+  stock           INTEGER DEFAULT 0,
+  seuil_alerte    INTEGER DEFAULT 5,
+  is_active       INTEGER DEFAULT 1,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE RESTRICT,
+  FOREIGN KEY (boutique_id) REFERENCES boutiques(id)  ON DELETE RESTRICT,
+  CHECK(prix_vente >= prix_partenaire)
+);
+CREATE INDEX IF NOT EXISTS idx_produits_boutique ON produits(boutique_id);
+CREATE INDEX IF NOT EXISTS idx_produits_category ON produits(category_id);
+
+-- ─────────────────────────────────────────────
+-- PERSONNEL
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS personnel (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id        INTEGER,
+  fullname       TEXT NOT NULL,
+  phone          TEXT,
+  email          TEXT,
+  poste          TEXT,
+  departement_id INTEGER,
+  boutique_id    INTEGER,
+  type_contrat   TEXT DEFAULT 'CDI',
+  date_embauche  DATE,
+  salaire_base   INTEGER DEFAULT 0,
+  statut         TEXT DEFAULT 'actif'
+                 CHECK(statut IN ('actif','suspendu','sorti')),
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id)        REFERENCES users(id)        ON DELETE SET NULL,
+  FOREIGN KEY (departement_id) REFERENCES departements(id) ON DELETE SET NULL,
+  FOREIGN KEY (boutique_id)    REFERENCES boutiques(id)    ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personnel_dept ON personnel(departement_id);
+CREATE INDEX IF NOT EXISTS idx_personnel_boutique ON personnel(boutique_id);
+
+-- ─────────────────────────────────────────────
+-- PAIEMENTS PERSONNEL
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS paiements_personnel (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  personnel_id     INTEGER NOT NULL,
+  montant          INTEGER NOT NULL CHECK(montant > 0),
+  type             TEXT NOT NULL
+                   CHECK(type IN ('salaire','prime','avance','autre')),
+  moyen_paiement   TEXT NOT NULL
+                   CHECK(moyen_paiement IN ('especes','mobile_money','virement','cheque','carte','alkherpay')),
+  justification    TEXT,
+  periode          TEXT,
+  piece_jointe     TEXT,
+  reference_paie   TEXT,
+  created_by       INTEGER,
+  created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (personnel_id) REFERENCES personnel(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by)   REFERENCES users(id)     ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paie_personnel ON paiements_personnel(personnel_id);
+
+-- ─────────────────────────────────────────────
+-- COMMANDES
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS commandes (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  reference         TEXT NOT NULL UNIQUE,
+  agent_id          INTEGER NOT NULL,
+  boutique_id       INTEGER NOT NULL,
+  statut            TEXT DEFAULT 'en_attente'
+                    CHECK(statut IN ('en_attente','validee','livree','annulee')),
+  total_partenaire  INTEGER DEFAULT 0,
+  total_vente       INTEGER DEFAULT 0,
+  motif_annulation  TEXT,
+  valide_par        INTEGER,
+  valide_at         DATETIME,
+  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (agent_id)    REFERENCES users(id)     ON DELETE RESTRICT,
+  FOREIGN KEY (boutique_id) REFERENCES boutiques(id) ON DELETE RESTRICT,
+  FOREIGN KEY (valide_par)  REFERENCES users(id)     ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_commandes_agent ON commandes(agent_id);
+CREATE INDEX IF NOT EXISTS idx_commandes_statut ON commandes(statut);
+
+-- ─────────────────────────────────────────────
+-- LIGNES DE COMMANDE
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lignes_commande (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  commande_id            INTEGER NOT NULL,
+  produit_id             INTEGER NOT NULL,
+  quantite               INTEGER NOT NULL CHECK(quantite > 0),
+  prix_partenaire_applique INTEGER NOT NULL,
+  prix_vente_applique    INTEGER NOT NULL,
+  marge_calculee         INTEGER GENERATED ALWAYS AS
+                         ((prix_vente_applique - prix_partenaire_applique) * quantite) STORED,
+  FOREIGN KEY (commande_id) REFERENCES commandes(id) ON DELETE CASCADE,
+  FOREIGN KEY (produit_id)  REFERENCES produits(id)  ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_lignes_commande ON lignes_commande(commande_id);
+
+-- ─────────────────────────────────────────────
+-- VENTES (validation de commande + calcul marge auto)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ventes (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  reference      TEXT NOT NULL UNIQUE,
+  agent_id       INTEGER NOT NULL,
+  commande_id    INTEGER,
+  total_vente    INTEGER NOT NULL DEFAULT 0,
+  total_marge    INTEGER NOT NULL DEFAULT 0,
+  statut         TEXT DEFAULT 'validee'
+                 CHECK(statut IN ('en_attente','validee','annulee')),
+  valide_par     INTEGER,
+  client_name    TEXT,
+  client_phone   TEXT,
+  valide_at      DATETIME,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (agent_id)    REFERENCES users(id)     ON DELETE RESTRICT,
+  FOREIGN KEY (commande_id) REFERENCES commandes(id) ON DELETE SET NULL,
+  FOREIGN KEY (valide_par)  REFERENCES users(id)     ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ventes_agent ON ventes(agent_id);
+CREATE INDEX IF NOT EXISTS idx_ventes_statut ON ventes(statut);
+CREATE INDEX IF NOT EXISTS idx_ventes_date ON ventes(created_at);
+
+-- ─────────────────────────────────────────────
+-- RAVITAILLEMENTS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ravitaillements (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  boutique_id       INTEGER NOT NULL,
+  produit_id        INTEGER NOT NULL,
+  quantite_demandee INTEGER NOT NULL CHECK(quantite_demandee > 0),
+  quantite_recue    INTEGER DEFAULT 0,
+  statut            TEXT DEFAULT 'demande'
+                    CHECK(statut IN ('demande','en_cours','recu','annule')),
+  lance_par         INTEGER,
+  recu_par          INTEGER,
+  recu_at           DATETIME,
+  notes             TEXT,
+  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (boutique_id) REFERENCES boutiques(id) ON DELETE RESTRICT,
+  FOREIGN KEY (produit_id)  REFERENCES produits(id)  ON DELETE RESTRICT,
+  FOREIGN KEY (lance_par)   REFERENCES users(id)     ON DELETE SET NULL,
+  FOREIGN KEY (recu_par)    REFERENCES users(id)     ON DELETE SET NULL
+);
+
+-- ─────────────────────────────────────────────
+-- CHARGES (dépenses)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS charges (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  boutique_id    INTEGER,
+  type           TEXT NOT NULL,
+  montant        INTEGER NOT NULL CHECK(montant > 0),
+  justification  TEXT NOT NULL,
+  moyen_paiement TEXT NOT NULL
+                 CHECK(moyen_paiement IN ('especes','mobile_money','virement','cheque','carte','alkherpay')),
+  piece_jointe   TEXT,
+  statut         TEXT DEFAULT 'validee'
+                 CHECK(statut IN ('en_attente','validee','rejetee')),
+  date_charge    DATE DEFAULT (DATE('now')),
+  created_by     INTEGER,
+  valide_par     INTEGER,
+  valide_at      DATETIME,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (boutique_id) REFERENCES boutiques(id) ON DELETE SET NULL,
+  FOREIGN KEY (created_by)  REFERENCES users(id)     ON DELETE SET NULL,
+  FOREIGN KEY (valide_par)  REFERENCES users(id)     ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_charges_date ON charges(date_charge);
+CREATE INDEX IF NOT EXISTS idx_charges_type ON charges(type);
+
+-- ─────────────────────────────────────────────
+-- NOTIFICATIONS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS notifications (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL,
+  title      TEXT NOT NULL,
+  message    TEXT NOT NULL,
+  type       TEXT DEFAULT 'info'
+             CHECK(type IN ('info','success','warning','error','transaction')),
+  category   TEXT DEFAULT 'general',
+  is_read    INTEGER DEFAULT 0,
+  link       TEXT,
+  metadata   TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notif_read ON notifications(is_read);
+
+-- ─────────────────────────────────────────────
+-- AUDIT LOGS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER,
+  action      TEXT NOT NULL,
+  resource    TEXT,
+  resource_id INTEGER,
+  details     TEXT,
+  ip          TEXT,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_date ON audit_logs(created_at);
+
+-- ─────────────────────────────────────────────
+-- PARAMÈTRES APPLICATION
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS app_settings (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  key        TEXT UNIQUE NOT NULL,
+  value      TEXT,
+  type       TEXT DEFAULT 'string',
+  updated_by INTEGER,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ─────────────────────────────────────────────
+-- LIEN WALLET ALKHERPAY (optionnel : mapping user ↔ phone AlkherPay)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS alkherpay_wallets (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id        INTEGER NOT NULL UNIQUE,
+  alkherpay_phone TEXT NOT NULL,
+  last_sync      DATETIME,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ─────────────────────────────────────────────
+-- TRIGGERS
+-- ─────────────────────────────────────────────
+
+-- Mise à jour auto de updated_at
+CREATE TRIGGER IF NOT EXISTS trg_users_updated
+AFTER UPDATE ON users
+BEGIN
+  UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_produits_updated
+AFTER UPDATE ON produits
+BEGIN
+  UPDATE produits SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+-- Notification stock bas
+CREATE TRIGGER IF NOT EXISTS trg_stock_alerte
+AFTER UPDATE OF stock ON produits
+WHEN NEW.stock <= NEW.seuil_alerte AND OLD.stock > NEW.seuil_alerte
+BEGIN
+  INSERT INTO notifications (user_id, title, message, type, category)
+  SELECT id,
+         '⚠️ Stock bas',
+         'Le produit "' || NEW.name || '" est en stock bas (' || NEW.stock || ' unités).',
+         'warning',
+         'stock'
+  FROM users WHERE role IN ('admin','gerant');
+END;
+
+-- Notification après validation de vente
+CREATE TRIGGER IF NOT EXISTS trg_vente_validee
+AFTER UPDATE OF statut ON ventes
+WHEN NEW.statut = 'validee' AND OLD.statut != 'validee'
+BEGIN
+  INSERT INTO notifications (user_id, title, message, type, category)
+  VALUES (
+    NEW.agent_id,
+    '✅ Vente validée',
+    'Votre vente ' || NEW.reference || ' a été validée. Marge: ' || NEW.total_marge || ' FCFA.',
+    'success',
+    'vente'
+  );
+END;
+
+-- ─────────────────────────────────────────────
+-- VUES UTILES
+-- ─────────────────────────────────────────────
+CREATE VIEW IF NOT EXISTS v_produits_full AS
+SELECT
+  p.*,
+  c.name  AS category_name,
+  b.name  AS boutique_name,
+  d.name  AS departement_name
+FROM produits p
+JOIN categories c ON p.category_id = c.id
+JOIN boutiques b ON p.boutique_id = b.id
+LEFT JOIN departements d ON b.departement_id = d.id;
+
+CREATE VIEW IF NOT EXISTS v_commandes_full AS
+SELECT
+  cmd.*,
+  u.fullname AS agent_name,
+  u.phone    AS agent_phone,
+  b.name     AS boutique_name,
+  vg.fullname AS valideur_name
+FROM commandes cmd
+JOIN users u ON cmd.agent_id = u.id
+JOIN boutiques b ON cmd.boutique_id = b.id
+LEFT JOIN users vg ON cmd.valide_par = vg.id;
+
+CREATE VIEW IF NOT EXISTS v_ventes_full AS
+SELECT
+  v.*,
+  u.fullname AS agent_name,
+  u.phone    AS agent_phone
+FROM ventes v
+JOIN users u ON v.agent_id = u.id;
+
+CREATE VIEW IF NOT EXISTS v_charges_full AS
+SELECT
+  ch.*,
+  b.name     AS boutique_name,
+  u.fullname AS createur_name,
+  vg.fullname AS valideur_name
+FROM charges ch
+LEFT JOIN boutiques b ON ch.boutique_id = b.id
+LEFT JOIN users u ON ch.created_by = u.id
+LEFT JOIN users vg ON ch.valide_par = vg.id;
+
+
+-- ================================================================
+-- MIGRATION 002 — Lien User khamis ↔ Compte AlkherPay
+-- ================================================================
+-- Date      : 2026-10-25
+-- Auteur    : Système khamis
+-- Objet     : Permet à chaque user khamis de lier un compte AlkherPay
+--             et d'avoir son propre solde/PIN/historique.
+-- ================================================================
+
+-- ─────────────────────────────────────────────
+-- 1. COLONNES ALKHERPAY SUR LA TABLE USERS
+-- ─────────────────────────────────────────────
+
+-- ID du user dans la base AlkherPay (facultatif)
+ALTER TABLE users ADD COLUMN alkherpay_user_id INTEGER;
+
+-- Numéro de téléphone du compte AlkherPay lié
+ALTER TABLE users ADD COLUMN alkherpay_phone TEXT;
+
+-- Date de liaison
+ALTER TABLE users ADD COLUMN alkherpay_linked_at DATETIME;
+
+-- Statut de la liaison : 'linked', 'pending', 'rejected'
+ALTER TABLE users ADD COLUMN alkherpay_link_status TEXT DEFAULT NULL
+  CHECK(alkherpay_link_status IN ('linked', 'pending', 'rejected', NULL));
+
+-- Note admin sur la liaison (motif rejet, etc.)
+ALTER TABLE users ADD COLUMN alkherpay_link_note TEXT;
+
+-- ─────────────────────────────────────────────
+-- 2. INDEX POUR PERFORMANCE
+-- ─────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_users_alkherpay_phone
+  ON users(alkherpay_phone);
+
+CREATE INDEX IF NOT EXISTS idx_users_alkherpay_status
+  ON users(alkherpay_link_status);
+
+-- ─────────────────────────────────────────────
+-- 3. TABLE DES DEMANDES DE CRÉATION DE COMPTE
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS alkherpay_account_requests (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id          INTEGER NOT NULL,
+  requested_phone  TEXT,
+  status           TEXT DEFAULT 'pending'
+                   CHECK(status IN ('pending', 'approved', 'rejected')),
+  admin_id         INTEGER,
+  admin_note       TEXT,
+  processed_at     DATETIME,
+  created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alkher_requests_user
+  ON alkherpay_account_requests(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_alkherpay_requests_status
+  ON alkherpay_account_requests(status);
+
+CREATE INDEX IF NOT EXISTS idx_alkherpay_requests_created
+  ON alkherpay_account_requests(created_at);
+
+-- ─────────────────────────────────────────────
+-- 4. TABLE DES LOGS DE LIAISON (audit)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS alkherpay_link_logs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL,
+  action      TEXT NOT NULL
+              CHECK(action IN ('link', 'unlink', 'request', 'approve', 'reject')),
+  old_phone   TEXT,
+  new_phone   TEXT,
+  admin_id    INTEGER,
+  notes       TEXT,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alkher_logs_user
+  ON alkherpay_link_logs(user_id);
+
+-- ─────────────────────────────────────────────
+-- 5. TRIGGER : mise à jour auto de updated_at
+-- ─────────────────────────────────────────────
+CREATE TRIGGER IF NOT EXISTS trg_alkher_requests_updated
+AFTER UPDATE ON alkherpay_account_requests
+BEGIN
+  UPDATE alkherpay_account_requests
+  SET updated_at = CURRENT_TIMESTAMP
+  WHERE id = NEW.id;
+END;
+
+-- ─────────────────────────────────────────────
+-- 6. VUE : users avec leur statut AlkherPay
+-- ─────────────────────────────────────────────
+CREATE VIEW IF NOT EXISTS v_users_alkherpay_status AS
+SELECT
+  u.id,
+  u.phone,
+  u.fullname,
+  u.role,
+  u.alkherpay_phone,
+  u.alkherpay_link_status,
+  u.alkherpay_linked_at,
+  CASE
+    WHEN u.alkherpay_phone IS NOT NULL THEN 'linked'
+    WHEN EXISTS (
+      SELECT 1 FROM alkherpay_account_requests
+      WHERE user_id = u.id AND status = 'pending'
+    ) THEN 'pending_request'
+    ELSE 'not_linked'
+  END AS alkherpay_state,
+  (
+    SELECT COUNT(*) FROM alkherpay_account_requests
+    WHERE user_id = u.id AND status = 'pending'
+  ) AS pending_requests
+FROM users u;
+
+
+-- ─────────────────────────────────────────────
+-- IMAGES PRODUITS (1-N)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS produit_images (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  produit_id  INTEGER NOT NULL,
+  filename    TEXT NOT NULL,
+  file_path   TEXT NOT NULL,
+  file_size   INTEGER,
+  mime_type   TEXT,
+  is_primary  INTEGER DEFAULT 0,
+  order_index INTEGER DEFAULT 0,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (produit_id) REFERENCES produits(id) ON DELETE CASCADE
+);
+-- ─────────────────────────────────────────────
+-- RESSOURCES D'AIDE (guides, vidéos, liens)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS help_resources (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  type        TEXT NOT NULL CHECK(type IN ('guide', 'video', 'link')),
+  category    TEXT NOT NULL DEFAULT 'general',
+  title       TEXT NOT NULL,
+  description TEXT,
+  url         TEXT,
+  file_path   TEXT,
+  file_size   INTEGER,
+  mime_type   TEXT,
+  thumbnail   TEXT,
+  order_index INTEGER DEFAULT 0,
+  is_active   INTEGER DEFAULT 1,
+  created_by  INTEGER,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_help_resources_type ON help_resources(type);
+CREATE INDEX IF NOT EXISTS idx_help_resources_category ON help_resources(category);
+CREATE INDEX IF NOT EXISTS idx_help_resources_active ON help_resources(is_active);
+
+CREATE INDEX IF NOT EXISTS idx_produit_images_produit ON produit_images(produit_id);
+CREATE INDEX IF NOT EXISTS idx_produit_images_primary ON produit_images(produit_id, is_primary);
+-- ================================================================
+-- FIN DE LA MIGRATION 002
+-- ================================================================
+-- ─────────────────────────────────────────────
+-- ADMIN PAR DÉFAUT (idempotent)
+-- ─────────────────────────────────────────────
+-- Mot de passe : 08093Ali (bcrypt, 10 rounds)
+-- ⚠️ CHANGEZ CE MOT DE PASSE EN PRODUCTION via /api/auth/change-password
+INSERT OR IGNORE INTO users (
+  phone,
+  fullname,
+  email,
+  password_hash,
+  role,
+  province,
+  city,
+  is_active,
+  kyc_level
+) VALUES (
+  '62787307',
+  'Administrateur khamis',
+  'admin@khamis.com',
+  '$2a$10$z4XMcVt2h03Dg0SAG7iXW.19ctrijP1kZlMND3q.NQih1KG5e41zW',
+  'admin',
+  'N''Djamena',
+  'N''Djamena',
+  1,
+  3
+);
