@@ -277,6 +277,21 @@ app.use('/api/admin/agents', adminAgentsRoutes);
 const helpRoutes = require('./routes/help.routes');
 app.use('/api/help', helpRoutes);
 
+// ════════════════════════════════════════════════
+// LIVREURS & LIVRAISONS
+// ════════════════════════════════════════════════
+const livreursRoutes = require('./routes/livreurs.routes');
+const livraisonsRoutes = require('./routes/livraisons.routes');
+app.use('/api/livreurs', livreursRoutes);
+app.use('/api/livraisons', livraisonsRoutes);
+
+// ════════════════════════════════════════════════
+// PARTENAIRES
+// ════════════════════════════════════════════════
+const partenairesRoutes = require('./routes/partenaires.routes');
+app.use('/api/partenaires', partenairesRoutes);
+
+
 
 function notifyUser(userId, notification) {
   io.to(`user_${userId}`).emit('notification', {

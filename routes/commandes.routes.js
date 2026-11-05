@@ -302,6 +302,122 @@ router.post(
     });
   })
 );
+// Dans backend/routes/commandes.routes.js
+
+// Ajoute en haut
+
+// Remplace la route PUT /:id/valider par :
+router.put(
+  '/:id/valider',
+  requirePermission('commandes', 'update'),
+  validate([
+    param('id').isInt().toInt(),
+    body('livreur_id').isInt().toInt().withMessage('Livreur requis pour la validation'),
+    body('adresse_livraison').trim().isLength({ min: 5, max: 300 }).withMessage('Adresse de livraison requise'),
+    body('destinataire').optional({ values: 'falsy' }).trim().isLength({ max: 100 }),
+    body('telephone_destinataire').optional({ values: 'falsy' }).trim().isLength({ max: 20 }),
+    body('frais_livraison').optional({ values: 'falsy' }).isInt({ min: 0 }).toInt(),
+    body('notes_livraison').optional({ values: 'falsy' }).trim().isLength({ max: 500 }),
+  ]),
+  asyncHandler(async (req, res) => {
+    const targetId = req.params.id;
+    const { livreur_id, adresse_livraison, destinataire, telephone_destinataire, frais_livraison, notes_livraison } = req.body;
+
+    const commande = await get('SELECT * FROM commandes WHERE id = ?', [targetId]);
+    if (!commande) throw new AppError('Commande introuvable', 404, 'COMMANDE_NOT_FOUND');
+
+    // Scoping
+    if (req.user.role === 'gerant') {
+      const ok = await canAccessBoutique(req.user, commande.boutique_id);
+      if (!ok) throw new AppError('Accès non autorisé', 403, 'COMMANDE_FORBIDDEN');
+    }
+
+    if (commande.statut !== 'en_attente') {
+      throw new AppError(`Impossible : commande déjà "${commande.statut}"`, 400, 'INVALID_COMMANDE_STATUS');
+    }
+
+    // Vérifier le livreur
+    const livreur = await get('SELECT * FROM livreurs WHERE id = ? AND is_active = 1', [livreur_id]);
+    if (!livreur) throw new AppError('Livreur introuvable ou inactif', 404, 'LIVREUR_NOT_FOUND');
+
+    // Charger les lignes
+    const lignes = await query(
+      `SELECT lc.*, p.stock, p.name AS produit_name
+       FROM lignes_commande lc
+       JOIN produits p ON lc.produit_id = p.id
+       WHERE lc.commande_id = ?`,
+      [targetId]
+    );
+
+    if (lignes.length === 0) throw new AppError('Commande sans lignes', 400, 'EMPTY_COMMANDE');
+
+    // Vérif stocks
+    for (const l of lignes) {
+      if (l.stock < l.quantite) {
+        throw new AppError(`Stock insuffisant pour "${l.produit_name}"`, 400, 'INSUFFICIENT_STOCK');
+      }
+    }
+
+    // Transaction : valider + créer livraison
+    let venteResult, livraisonResult;
+
+    await run('BEGIN TRANSACTION');
+    try {
+      // 1. Décrémenter stocks
+      for (const l of lignes) {
+        await run(`UPDATE produits SET stock = stock - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [l.quantite, l.produit_id]);
+      }
+
+      // 2. Valider commande + créer vente (utilise ton helper existant)
+      const { validerCommandeEtCalculerMarge } = require('../services/marginCalculator');
+      venteResult = await validerCommandeEtCalculerMarge(targetId, req.user.userId);
+
+      // 3. Créer la livraison
+      const livraisonRef = `LIV-${Date.now()}-${uuidv4().slice(0, 6).toUpperCase()}`;
+      const livRes = await run(
+        `INSERT INTO livraisons
+         (reference, commande_id, livreur_id, adresse, destinataire, telephone, notes, frais, statut, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'en_cours', ?)`,
+        [
+          livraisonRef, targetId, livreur_id, adresse_livraison,
+          destinataire || null, telephone_destinataire || null,
+          notes_livraison || null, frais_livraison || 0,
+          req.user.userId,
+        ]
+      );
+      livraisonResult = { id: livRes.lastID, reference: livraisonRef };
+
+      await run('COMMIT');
+    } catch (err) {
+      await run('ROLLBACK');
+      throw err;
+    }
+
+    // Notifications
+    await run(
+      `INSERT INTO notifications (user_id, title, message, type, category, link)
+       VALUES (?, '✅ Commande validée', ?, 'success', 'commande', ?)`,
+      [
+        commande.agent_id,
+        `Commande validée. Livreur : ${livreur.fullname}. Marge : ${venteResult.total_marge.toLocaleString()} FCFA`,
+        `/commandes/${targetId}`,
+      ]
+    ).catch(() => {});
+
+    res.json({
+      success: true,
+      message: `Commande validée. Livraison ${livraisonResult.reference} créée et assignée à ${livreur.fullname}`,
+      commande: await get('SELECT * FROM commandes WHERE id = ?', [targetId]),
+      vente: venteResult,
+      livraison: {
+        id: livraisonResult.id,
+        reference: livraisonResult.reference,
+        livreur: { id: livreur.id, name: livreur.fullname, phone: livreur.phone },
+        adresse: adresse_livraison,
+      },
+    });
+  })
+);
 
 // ─────────────────────────────────────────────
 // PUT /api/commandes/:id/valider — validation gérant

@@ -396,7 +396,7 @@ async function seed() {
     // ────────────────────────────────────────
     await run(
       `INSERT INTO notifications (user_id, title, message, type, category)
-       VALUES (?, '🎉 Bienvenue', 'Bienvenue sur khamis GLOBALE GROUPES !', 'success', 'general')`,
+       VALUES (?, '🎉 Bienvenue', 'Bienvenue sur khamis GLOBAL GROUP !', 'success', 'general')`,
       [adminId]
     );
     console.log('✅ Notifications de démo créées');

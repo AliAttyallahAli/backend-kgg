@@ -60,9 +60,9 @@ async function loadImagesFor(produitIds) {
   return byProduit;
 }
 
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
 // GET /api/produits — liste paginée + filtres
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
 router.get(
   '/',
   validate([
@@ -71,6 +71,7 @@ router.get(
     qv('search').optional({ values: 'falsy' }).trim().isLength({ max: 100 }),
     qv('category_id').optional({ values: 'falsy' }).isInt().toInt(),
     qv('boutique_id').optional({ values: 'falsy' }).isInt().toInt(),
+    qv('partenaire_id').optional({ values: 'falsy' }).isInt().toInt(),   // ✅
     qv('is_active').optional({ values: 'falsy' }).isIn(['0', '1', 'all']),
     qv('low_stock').optional({ values: 'falsy' }).isIn(['0', '1']),
     qv('sort').optional({ values: 'falsy' }).isIn(['name', 'prix_vente', 'stock', 'marge_unitaire', 'created_at']),
@@ -84,6 +85,7 @@ router.get(
     const search = cleanStr(req.query.search);
     const categoryId = cleanId(req.query.category_id);
     const boutiqueId = cleanId(req.query.boutique_id);
+    const partenaireId = cleanId(req.query.partenaire_id);      // ✅
     const isActive = req.query.is_active;
     const lowStock = req.query.low_stock;
     const sort = req.query.sort || 'name';
@@ -107,6 +109,7 @@ router.get(
     }
     if (categoryId) { conditions.push('p.category_id = ?'); params.push(categoryId); }
     if (boutiqueId) { conditions.push('p.boutique_id = ?'); params.push(boutiqueId); }
+    if (partenaireId) { conditions.push('p.partenaire_id = ?'); params.push(partenaireId); }   // ✅
     if (search) {
       conditions.push('(p.name LIKE ? OR p.reference LIKE ?)');
       params.push(`%${search}%`, `%${search}%`);
@@ -128,10 +131,13 @@ router.get(
               c.name AS category_name,
               c.color AS category_color,
               b.name AS boutique_name,
+              pa.name AS partenaire_name,                   -- ✅
+              pa.code AS partenaire_code,                   -- ✅
               CASE WHEN p.stock <= p.seuil_alerte THEN 1 ELSE 0 END AS alerte_stock
        FROM produits p
        JOIN categories c ON p.category_id = c.id
        JOIN boutiques b ON p.boutique_id = b.id
+       LEFT JOIN partenaires pa ON p.partenaire_id = pa.id  -- ✅
        WHERE ${where}
        ORDER BY p.${sort} ${order}
        LIMIT ? OFFSET ?`,
@@ -157,10 +163,10 @@ router.get(
   })
 );
 
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
 // GET /api/produits/alertes/stock-bas
 // ⚠️ AVANT /:id
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
 router.get(
   '/alertes/stock-bas',
   asyncHandler(async (req, res) => {
@@ -189,18 +195,25 @@ router.get(
   })
 );
 
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
 // GET /api/produits/:id
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
 router.get(
   '/:id',
   validate([param('id').isInt().toInt()]),
   asyncHandler(async (req, res) => {
     const produit = await get(
-      `SELECT p.*, c.name AS category_name, b.name AS boutique_name
+      `SELECT p.*,
+              c.name AS category_name,
+              b.name AS boutique_name,
+              pa.name AS partenaire_name,             -- ✅
+              pa.code AS partenaire_code,             -- ✅
+              pa.phone AS partenaire_phone,           -- ✅
+              pa.email AS partenaire_email            -- ✅
        FROM produits p
        JOIN categories c ON p.category_id = c.id
        JOIN boutiques b ON p.boutique_id = b.id
+       LEFT JOIN partenaires pa ON p.partenaire_id = pa.id   -- ✅
        WHERE p.id = ?`,
       [req.params.id]
     );
@@ -255,9 +268,9 @@ router.get(
   })
 );
 
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
 // POST /api/produits — création avec images
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
 router.post(
   '/',
   requirePermission('produits', 'create'),
@@ -268,6 +281,7 @@ router.post(
     body('description').optional({ values: 'falsy' }).trim().isLength({ max: 1000 }),
     body('category_id').isInt().toInt().withMessage('Catégorie requise'),
     body('boutique_id').isInt().toInt().withMessage('Boutique requise'),
+    body('partenaire_id').optional({ values: 'falsy' }).isInt().toInt(),   // ✅
     body('prix_partenaire').isInt({ min: 0 }).toInt().withMessage('Prix partenaire requis'),
     body('prix_vente').isInt({ min: 0 }).toInt().withMessage('Prix de vente requis'),
     body('stock').optional({ values: 'falsy' }).isInt({ min: 0 }).toInt(),
@@ -276,7 +290,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const {
       name, reference, description,
-      category_id, boutique_id,
+      category_id, boutique_id, partenaire_id,        // ✅
       prix_partenaire, prix_vente,
       stock, seuil_alerte,
     } = req.body;
@@ -294,6 +308,17 @@ router.post(
     const boutique = await get('SELECT id FROM boutiques WHERE id = ? AND is_active = 1', [boutique_id]);
     if (!boutique) throw new AppError('Boutique introuvable ou inactive', 404, 'BOUTIQUE_NOT_FOUND');
 
+    // ✅ Vérifier le partenaire si fourni
+    if (partenaire_id) {
+      const partenaire = await get(
+        'SELECT id FROM partenaires WHERE id = ? AND is_active = 1',
+        [partenaire_id]
+      );
+      if (!partenaire) {
+        throw new AppError('Partenaire introuvable ou inactif', 404, 'PARTENAIRE_NOT_FOUND');
+      }
+    }
+
     const canAccess = await canAccessBoutique(req.user, boutique_id);
     if (!canAccess) throw new AppError('Accès non autorisé à cette boutique', 403, 'BOUTIQUE_FORBIDDEN');
 
@@ -305,12 +330,12 @@ router.post(
 
     const result = await run(
       `INSERT INTO produits
-       (reference, name, description, category_id, boutique_id,
+       (reference, name, description, category_id, boutique_id, partenaire_id,
         prix_partenaire, prix_vente, stock, seuil_alerte)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         finalRef, name.trim(), description || null,
-        category_id, boutique_id,
+        category_id, boutique_id, partenaire_id || null,    // ✅
         prix_partenaire, prix_vente,
         stock || 0, seuil_alerte ?? 10,
       ]
@@ -348,7 +373,7 @@ router.post(
       action: 'PRODUIT_CREATED',
       resource: 'produits',
       resourceId: produitId,
-      details: { name, prix_partenaire, prix_vente, marge, nb_images: files.length },
+      details: { name, prix_partenaire, prix_vente, marge, partenaire_id, nb_images: files.length },
       ip: getClientIp(req),
     });
 
@@ -361,9 +386,9 @@ router.post(
   })
 );
 
-// ─────────────────────────────────────────────
-// PUT /api/produits/:id — mise à jour
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════
+// PUT /api/produits/:id
+// ═══════════════════════════════════════════════
 router.put(
   '/:id',
   requirePermission('produits', 'update'),
@@ -373,6 +398,7 @@ router.put(
     body('description').optional({ values: 'falsy' }).trim().isLength({ max: 1000 }),
     body('category_id').optional({ values: 'falsy' }).isInt().toInt(),
     body('boutique_id').optional({ values: 'falsy' }).isInt().toInt(),
+    body('partenaire_id').optional({ values: 'falsy' }).isInt().toInt(),   // ✅
     body('prix_partenaire').optional({ values: 'falsy' }).isInt({ min: 0 }).toInt(),
     body('prix_vente').optional({ values: 'falsy' }).isInt({ min: 0 }).toInt(),
     body('stock').optional({ values: 'falsy' }).isInt({ min: 0 }).toInt(),
@@ -414,12 +440,19 @@ router.put(
       }
     }
 
+    // ✅ Vérifier le partenaire si fourni
+    if (req.body.partenaire_id) {
+      const pa = await get('SELECT id FROM partenaires WHERE id = ? AND is_active = 1', [req.body.partenaire_id]);
+      if (!pa) throw new AppError('Partenaire introuvable ou inactif', 404, 'PARTENAIRE_NOT_FOUND');
+    }
+
     await run(
       `UPDATE produits SET
         name = COALESCE(?, name),
         description = COALESCE(?, description),
         category_id = COALESCE(?, category_id),
         boutique_id = COALESCE(?, boutique_id),
+        partenaire_id = ?,                                    -- ✅
         prix_partenaire = COALESCE(?, prix_partenaire),
         prix_vente = COALESCE(?, prix_vente),
         stock = COALESCE(?, stock),
@@ -430,6 +463,7 @@ router.put(
       [
         req.body.name, req.body.description,
         req.body.category_id, req.body.boutique_id,
+        req.body.partenaire_id === undefined ? produit.partenaire_id : req.body.partenaire_id,   // ✅
         req.body.prix_partenaire, req.body.prix_vente,
         req.body.stock, req.body.seuil_alerte,
         req.body.is_active === undefined ? produit.is_active : (req.body.is_active ? 1 : 0),
@@ -462,9 +496,7 @@ router.put(
 // IMAGES PRODUIT
 // ═══════════════════════════════════════════════
 
-// ─────────────────────────────────────────────
-// POST /api/produits/:id/images — ajouter des images
-// ─────────────────────────────────────────────
+// POST /:id/images
 router.post(
   '/:id/images',
   requirePermission('produits', 'update'),
@@ -472,7 +504,6 @@ router.post(
   validate([param('id').isInt().toInt()]),
   asyncHandler(async (req, res) => {
     const produitId = req.params.id;
-
     const produit = await get('SELECT * FROM produits WHERE id = ?', [produitId]);
     if (!produit) throw new AppError('Produit introuvable', 404, 'PRODUIT_NOT_FOUND');
 
@@ -480,9 +511,7 @@ router.post(
     if (!canAccess) throw new AppError('Accès non autorisé', 403, 'PRODUIT_FORBIDDEN');
 
     const files = req.files || [];
-    if (files.length === 0) {
-      throw new AppError('Aucune image fournie', 400, 'NO_FILES');
-    }
+    if (files.length === 0) throw new AppError('Aucune image fournie', 400, 'NO_FILES');
 
     const existing = await get(
       'SELECT COUNT(*) AS c FROM produit_images WHERE produit_id = ?',
@@ -498,11 +527,8 @@ router.post(
          (produit_id, filename, file_path, file_size, mime_type, is_primary, order_index)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          produitId,
-          f.filename,
-          f.path.replace(/\\/g, '/'),
-          f.size,
-          f.mimetype,
+          produitId, f.filename, f.path.replace(/\\/g, '/'),
+          f.size, f.mimetype,
           startOrder === 0 && i === 0 ? 1 : 0,
           startOrder + i,
         ]
@@ -524,18 +550,11 @@ router.post(
       ip: getClientIp(req),
     });
 
-    res.json({
-      success: true,
-      message: `${files.length} image(s) ajoutée(s)`,
-      images,
-      inserted_ids: insertedIds,
-    });
+    res.json({ success: true, message: `${files.length} image(s) ajoutée(s)`, images, inserted_ids: insertedIds });
   })
 );
 
-// ─────────────────────────────────────────────
-// DELETE /api/produits/:id/images/:imageId
-// ─────────────────────────────────────────────
+// DELETE /:id/images/:imageId
 router.delete(
   '/:id/images/:imageId',
   requirePermission('produits', 'update'),
@@ -575,9 +594,7 @@ router.delete(
         'SELECT id FROM produit_images WHERE produit_id = ? ORDER BY order_index LIMIT 1',
         [produitId]
       );
-      if (next) {
-        await run('UPDATE produit_images SET is_primary = 1 WHERE id = ?', [next.id]);
-      }
+      if (next) await run('UPDATE produit_images SET is_primary = 1 WHERE id = ?', [next.id]);
     }
 
     await logAction({
@@ -593,9 +610,7 @@ router.delete(
   })
 );
 
-// ─────────────────────────────────────────────
-// PATCH /api/produits/:id/images/:imageId/primary
-// ─────────────────────────────────────────────
+// PATCH /:id/images/:imageId/primary
 router.patch(
   '/:id/images/:imageId/primary',
   requirePermission('produits', 'update'),
@@ -626,9 +641,7 @@ router.patch(
   })
 );
 
-// ─────────────────────────────────────────────
-// PATCH /api/produits/:id/stock
-// ─────────────────────────────────────────────
+// PATCH /:id/stock
 router.patch(
   '/:id/stock',
   requirePermission('produits', 'update'),
@@ -670,16 +683,13 @@ router.patch(
   })
 );
 
-// ─────────────────────────────────────────────
-// DELETE /api/produits/:id — soft delete
-// ─────────────────────────────────────────────
+// DELETE /:id — soft delete
 router.delete(
   '/:id',
   requirePermission('produits', 'delete'),
   validate([param('id').isInt().toInt()]),
   asyncHandler(async (req, res) => {
     const targetId = req.params.id;
-
     const produit = await get('SELECT * FROM produits WHERE id = ?', [targetId]);
     if (!produit) throw new AppError('Produit introuvable', 404, 'PRODUIT_NOT_FOUND');
 
